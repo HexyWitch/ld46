@@ -70,6 +70,11 @@ impl Application {
                 &mut texture_atlas,
                 &mut texture,
             )?,
+            lily_pad: load_image(
+                include_bytes!("../assets/lily_pad.png"),
+                &mut texture_atlas,
+                &mut texture,
+            )?,
         };
 
         let vertex_shader = gl_context
@@ -182,53 +187,68 @@ struct Assets {
     frog_leg_upper_right: TextureRect,
     frog_leg_lower_right: TextureRect,
     frog_foot: TextureRect,
+    lily_pad: TextureRect,
 }
 
 struct Frog {
     position: Point2D<f32>,
-    body: Sprite,
-    leg_upper_left: (Point2D<f32>, Sprite),
-    leg_lower_left: (Point2D<f32>, Sprite),
-    foot_left: (Point2D<f32>, Sprite),
-    leg_upper_right: (Point2D<f32>, Sprite),
-    leg_lower_right: (Point2D<f32>, Sprite),
-    foot_right: (Point2D<f32>, Sprite),
+
+    lily_pad: Sprite,
+    body: (Point2D<f32>, Angle<f32>, Sprite),
+    leg_upper_left: (Point2D<f32>, Angle<f32>, Sprite),
+    leg_lower_left: (Point2D<f32>, Angle<f32>, Sprite),
+    foot_left: (Point2D<f32>, Angle<f32>, Sprite),
+    leg_upper_right: (Point2D<f32>, Angle<f32>, Sprite),
+    leg_lower_right: (Point2D<f32>, Angle<f32>, Sprite),
+    foot_right: (Point2D<f32>, Angle<f32>, Sprite),
 }
 
 impl Frog {
     pub fn new(assets: &Assets) -> Self {
+        let foot = Sprite::new(assets.frog_foot, point2(3., 2.));
+
+        let body_anchor = point2(14.0, 14.0);
+        let body = (
+            body_anchor,
+            Angle::degrees(0.),
+            Sprite::new(assets.frog_body, point2(9., 10.)),
+        );
+
         let left_upper_anchor = point2(5., 2.);
         let leg_upper_left = (
             left_upper_anchor,
+            Angle::degrees(-120.),
             Sprite::new(assets.frog_leg_upper_left, point2(4., 2.)),
         );
         let left_lower_anchor = point2(2., 9.);
         let leg_lower_left = (
             left_lower_anchor,
+            Angle::degrees(120.),
             Sprite::new(assets.frog_leg_lower_left, point2(3., 10.)),
         );
+        let left_foot_anchor = point2(2., 1.);
+        let foot_left = (left_foot_anchor, Angle::degrees(180.), foot.clone());
+
         let right_upper_anchor = point2(13., 2.);
         let leg_upper_right = (
             right_upper_anchor,
+            Angle::degrees(0.),
             Sprite::new(assets.frog_leg_upper_right, point2(2., 2.)),
         );
         let right_lower_anchor = point2(4., 9.);
         let leg_lower_right = (
             right_lower_anchor,
+            Angle::degrees(0.),
             Sprite::new(assets.frog_leg_lower_right, point2(2., 10.)),
         );
-
-        let foot = Sprite::new(assets.frog_foot, point2(3.0, 2.0));
-
-        let left_foot_anchor = point2(1.0, 1.0);
-        let foot_left = (left_foot_anchor, foot.clone());
-
-        let right_foot_anchor = point2(4.0, 1.0);
-        let foot_right = (right_foot_anchor, foot);
+        let right_foot_anchor = point2(4., 1.);
+        let foot_right = (right_foot_anchor, Angle::degrees(0.), foot);
 
         Self {
             position: point2(100., 50.),
-            body: Sprite::new(assets.frog_body, point2(9., 10.)),
+
+            lily_pad: Sprite::new(assets.lily_pad, point2(14., 14.)),
+            body,
             leg_upper_left,
             leg_lower_left,
             foot_left,
@@ -239,61 +259,73 @@ impl Frog {
     }
 
     pub fn render(&mut self, out: &mut Vec<Vertex>) {
-        self.body
+        self.lily_pad
             .set_transform(Transform2D::create_rotation(Angle::degrees(45.)));
 
-        let anchor_sprite = |sprite: &mut Sprite, anchor: Point2D<f32>, parent: &Sprite| {
-            sprite.set_transform(
-                Transform2D::create_translation(anchor.x, anchor.y)
-                    .post_transform(parent.transform()),
-            );
-        };
+        let anchor_sprite =
+            |sprite: &mut Sprite, anchor: Point2D<f32>, angle: Angle<f32>, parent: &Sprite| {
+                sprite.set_transform(
+                    Transform2D::create_rotation(angle)
+                        .post_translate(anchor.to_vector())
+                        .post_transform(parent.transform()),
+                );
+            };
 
-        // the upper leg bone's connected to the.. body bone
+        // the body bone's connected to the.. lily pad bone!
+        anchor_sprite(&mut self.body.2, self.body.0, self.body.1, &self.lily_pad);
+
+        // the upper leg bone's connected to the.. body bone!
         anchor_sprite(
-            &mut self.leg_upper_left.1,
+            &mut self.leg_upper_left.2,
             self.leg_upper_left.0,
-            &self.body,
+            self.leg_upper_left.1,
+            &self.body.2,
         );
-        // the lower leg bone's connected to the.. upper leg bone bone
+        // the lower leg bone's connected to the.. upper leg bone bone!
         anchor_sprite(
-            &mut self.leg_lower_left.1,
+            &mut self.leg_lower_left.2,
             self.leg_lower_left.0,
-            &self.leg_upper_left.1,
+            self.leg_lower_left.1,
+            &self.leg_upper_left.2,
         );
-        // the foot bone's connected to the.. lower leg bone bone
+        // the foot bone's connected to the.. lower leg bone bone!
         anchor_sprite(
-            &mut self.foot_left.1,
+            &mut self.foot_left.2,
             self.foot_left.0,
-            &self.leg_lower_left.1,
+            self.foot_left.1,
+            &self.leg_lower_left.2,
         );
 
-        // the upper leg bone's connected to the.. body bone
+        // the upper leg bone's connected to the.. body bone!
         anchor_sprite(
-            &mut self.leg_upper_right.1,
+            &mut self.leg_upper_right.2,
             self.leg_upper_right.0,
-            &self.body,
+            self.leg_upper_right.1,
+            &self.body.2,
         );
-        // the lower leg bone's connected to the.. upper leg bone bone
+        // the lower leg bone's connected to the.. upper leg bone bone!
         anchor_sprite(
-            &mut self.leg_lower_right.1,
+            &mut self.leg_lower_right.2,
             self.leg_lower_right.0,
-            &self.leg_upper_right.1,
+            self.leg_lower_right.1,
+            &self.leg_upper_right.2,
         );
-        // the foot bone's connected to the.. lower leg bone bone
+        // the foot bone's connected to the.. lower leg bone bone!
         anchor_sprite(
-            &mut self.foot_right.1,
+            &mut self.foot_right.2,
             self.foot_right.0,
-            &self.leg_lower_right.1,
+            self.foot_right.1,
+            &self.leg_lower_right.2,
         );
 
-        render_sprite(&self.body, self.position, out);
-        render_sprite(&self.foot_left.1, self.position, out);
-        render_sprite(&self.foot_right.1, self.position, out);
-        render_sprite(&self.leg_lower_left.1, self.position, out);
-        render_sprite(&self.leg_lower_right.1, self.position, out);
-        render_sprite(&self.leg_upper_left.1, self.position, out);
-        render_sprite(&self.leg_upper_right.1, self.position, out);
+        render_sprite(&self.lily_pad, self.position, out);
+        render_sprite(&self.body.2, self.position, out);
+        render_sprite(&self.foot_left.2, self.position, out);
+        render_sprite(&self.foot_right.2, self.position, out);
+        render_sprite(&self.leg_lower_left.2, self.position, out);
+        render_sprite(&self.leg_lower_right.2, self.position, out);
+        render_sprite(&self.leg_upper_left.2, self.position, out);
+        render_sprite(&self.leg_upper_right.2, self.position, out);
     }
 }
 
