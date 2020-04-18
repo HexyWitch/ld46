@@ -5,7 +5,11 @@ use euclid::{
 };
 use zerocopy::AsBytes;
 
-use crate::{gl, texture_atlas::TextureAtlas};
+use crate::{
+    gl,
+    input::{InputEvent, Key, MouseButton},
+    texture_atlas::TextureAtlas,
+};
 
 const TEXTURE_ATLAS_SIZE: Size2D<u32> = Size2D {
     width: 1024,
@@ -22,6 +26,10 @@ pub struct Application {
     program: gl::Program,
     borders_buffer: gl::VertexBuffer,
     entities_buffer: gl::VertexBuffer,
+
+    game_state: GameState,
+
+    last_update: f32,
 }
 
 impl Application {
@@ -144,6 +152,8 @@ impl Application {
         let mut borders_buffer = gl_context.create_vertex_buffer()?;
         borders_buffer.write(&border_vertices);
 
+        let game_state = GameState::new(&assets);
+
         Ok(Self {
             texture_atlas,
             texture,
@@ -152,21 +162,38 @@ impl Application {
             program,
             borders_buffer,
             entities_buffer: gl_context.create_vertex_buffer()?,
+
+            game_state,
+
+            last_update: 0.0,
         })
     }
 
-    pub fn update(&mut self, dt: f32) -> Result<(), Error> {
+    pub fn update(&mut self, input: &[InputEvent], dt: f32) -> Result<(), Error> {
+        self.last_update += dt;
+
+        for event in input {
+            match event {
+                InputEvent::KeyDown(Key::A) => self.game_state.frog.kick(-1),
+                InputEvent::KeyDown(Key::D) => self.game_state.frog.kick(1),
+                _ => {}
+            }
+        }
+
+        while self.last_update > 1. / 60. {
+            self.game_state.frog.update(1. / 60.);
+
+            self.last_update -= 1. / 60.;
+        }
         Ok(())
     }
 
     pub fn render(&mut self, gl_context: &mut gl::Context) -> Result<(), Error> {
         gl_context.clear([91. / 255., 164. / 255., 244. / 255., 1.]);
 
-        let mut frog = Frog::new(&self.assets);
-
         let mut entities = Vec::new();
 
-        frog.render(&mut entities);
+        self.game_state.frog.render(&mut entities);
 
         self.program.render_vertices(&self.borders_buffer)?;
 
@@ -192,6 +219,12 @@ struct Assets {
 
 struct Frog {
     position: Point2D<f32>,
+    velocity: Vector2D<f32>,
+    angle: Angle<f32>,
+    angular_velocity: f32,
+
+    kick_left_duration: f32,
+    kick_right_duration: f32,
 
     lily_pad: Sprite,
     body: (Point2D<f32>, Angle<f32>, Sprite),
@@ -204,7 +237,7 @@ struct Frog {
 }
 
 impl Frog {
-    pub fn new(assets: &Assets) -> Self {
+    pub fn new(assets: &Assets, position: Point2D<f32>) -> Self {
         let foot = Sprite::new(assets.frog_foot, point2(3., 2.));
 
         let body_anchor = point2(14.0, 14.0);
@@ -245,7 +278,13 @@ impl Frog {
         let foot_right = (right_foot_anchor, Angle::degrees(0.), foot);
 
         Self {
-            position: point2(100., 50.),
+            position,
+            velocity: vec2(0., 0.),
+            angle: Angle::degrees(0.),
+            angular_velocity: 0.,
+
+            kick_left_duration: 0.0,
+            kick_right_duration: 0.0,
 
             lily_pad: Sprite::new(assets.lily_pad, point2(14., 14.)),
             body,
@@ -258,10 +297,77 @@ impl Frog {
         }
     }
 
-    pub fn render(&mut self, out: &mut Vec<Vertex>) {
-        self.lily_pad
-            .set_transform(Transform2D::create_rotation(Angle::degrees(45.)));
+    pub fn kick(&mut self, direction: i32) {
+        let direction = if direction > 0 { 1 } else { -1 };
+        let duration = if direction > 0 {
+            &mut self.kick_right_duration
+        } else {
+            &mut self.kick_left_duration
+        };
 
+        let pre_angular_vel = self.angular_velocity;
+        if *duration <= 0.0 {
+            if self.angular_velocity * (-direction as f32) < 0.0 {
+                self.angular_velocity = 0.0;
+            }
+            self.angular_velocity +=
+                FROG_KICK_ANGULAR_MOMENTUM / FROG_MOMENT_OF_INERTIA * -direction as f32;
+            self.velocity += Transform2D::create_rotation(self.angle)
+                .transform_vector(vec2(0.0, 1.0))
+                * (FROG_KICK_LINEAR_MOMENTUM / FROG_MASS);
+        }
+        let a_vel_diff = self.angular_velocity - pre_angular_vel;
+        if a_vel_diff < 0.0 {
+            // One frog's angular momentum loss is the same frog's linear momentum gain
+            let angular_momentum_loss = a_vel_diff.abs() * FROG_MOMENT_OF_INERTIA;
+            self.velocity += Transform2D::create_rotation(self.angle)
+                .transform_vector(vec2(0.0, 1.0))
+                * (angular_momentum_loss / FROG_MASS);
+        }
+
+        *duration = 0.25
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        let (upper_a, lower_a, foot_a) = if self.kick_left_duration > 0.0 {
+            (
+                Angle::degrees(-120.),
+                Angle::degrees(120.),
+                Angle::degrees(180.),
+            )
+        } else {
+            (Angle::degrees(0.), Angle::degrees(0.), Angle::degrees(0.))
+        };
+        self.leg_upper_left.1 = upper_a;
+        self.leg_lower_left.1 = lower_a;
+        self.foot_left.1 = foot_a;
+        self.kick_left_duration -= dt;
+
+        let (upper_a, lower_a, foot_a) = if self.kick_right_duration > 0.0 {
+            (
+                Angle::degrees(120.),
+                Angle::degrees(-120.),
+                Angle::degrees(180.),
+            )
+        } else {
+            (Angle::degrees(0.), Angle::degrees(0.), Angle::degrees(0.))
+        };
+        self.leg_upper_right.1 = upper_a;
+        self.leg_lower_right.1 = lower_a;
+        self.foot_right.1 = foot_a;
+        self.kick_right_duration -= dt;
+
+        self.position += self.velocity * dt;
+        self.angle.radians += self.angular_velocity * dt;
+
+        self.lily_pad
+            .set_transform(Transform2D::create_rotation(self.angle));
+
+        self.velocity *= 0.99;
+        self.angular_velocity *= 0.99;
+    }
+
+    pub fn render(&mut self, out: &mut Vec<Vertex>) {
         let anchor_sprite =
             |sprite: &mut Sprite, anchor: Point2D<f32>, angle: Angle<f32>, parent: &Sprite| {
                 sprite.set_transform(
@@ -329,6 +435,12 @@ impl Frog {
     }
 }
 
+const FROG_KICK_ANGULAR_MOMENTUM: f32 = 6.;
+const FROG_KICK_LINEAR_MOMENTUM: f32 = 10.;
+
+const FROG_MOMENT_OF_INERTIA: f32 = 3.0;
+const FROG_MASS: f32 = 1.0;
+
 #[derive(Clone)]
 struct Sprite {
     image: TextureRect,
@@ -357,7 +469,17 @@ impl Sprite {
     }
 }
 
-struct GameState {}
+struct GameState {
+    frog: Frog,
+}
+
+impl GameState {
+    pub fn new(assets: &Assets) -> Self {
+        Self {
+            frog: Frog::new(assets, point2(133., 50.)),
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, AsBytes)]
