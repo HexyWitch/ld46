@@ -3,11 +3,12 @@ use euclid::{
     default::{Point2D, Rect, Size2D, Transform2D, Vector2D},
     point2, size2, vec2, Angle,
 };
+use rand::{rngs::SmallRng, Rng, SeedableRng};
 use zerocopy::AsBytes;
 
 use crate::{
     gl,
-    input::{InputEvent, Key, MouseButton},
+    input::{InputEvent, Key},
     texture_atlas::TextureAtlas,
 };
 
@@ -19,9 +20,6 @@ const TEXTURE_ATLAS_SIZE: Size2D<u32> = Size2D {
 
 pub struct Application {
     assets: Assets,
-
-    texture_atlas: TextureAtlas,
-    texture: gl::Texture,
 
     program: gl::Program,
     borders_buffer: gl::VertexBuffer,
@@ -80,6 +78,26 @@ impl Application {
             )?,
             lily_pad: load_image(
                 include_bytes!("../assets/lily_pad.png"),
+                &mut texture_atlas,
+                &mut texture,
+            )?,
+            fly: load_image(
+                include_bytes!("../assets/fly.png"),
+                &mut texture_atlas,
+                &mut texture,
+            )?,
+            fly_shadow: load_image(
+                include_bytes!("../assets/fly_shadow.png"),
+                &mut texture_atlas,
+                &mut texture,
+            )?,
+            tongue_segment: load_image(
+                include_bytes!("../assets/tongue_segment.png"),
+                &mut texture_atlas,
+                &mut texture,
+            )?,
+            tongue_end: load_image(
+                include_bytes!("../assets/tongue_end.png"),
                 &mut texture_atlas,
                 &mut texture,
             )?,
@@ -155,8 +173,6 @@ impl Application {
         let game_state = GameState::new(&assets);
 
         Ok(Self {
-            texture_atlas,
-            texture,
             assets,
 
             program,
@@ -180,8 +196,43 @@ impl Application {
             }
         }
 
-        while self.last_update > 1. / 60. {
-            self.game_state.frog.update(1. / 60.);
+        // the jankiest fixed timestep loop you'll ever see
+        if self.last_update > 1. / 60. {
+            let dt = 1. / 60.;
+
+            self.game_state.frog.update(dt);
+
+            if let Some(ref mut eaten_fly) = self.game_state.eaten_fly {
+                if self.game_state.frog.is_eating() && self.game_state.frog.tongue_withdrawing() {
+                    eaten_fly.set_eaten();
+                    eaten_fly.position = self.game_state.frog.tongue_position().unwrap();
+                }
+
+                if !self.game_state.frog.is_eating() {
+                    self.game_state.eaten_fly = None;
+                }
+            }
+
+            let mut eat_fly = None;
+            for (i, fly) in self.game_state.flies.iter_mut().enumerate() {
+                fly.update(dt, &mut self.game_state.rng);
+
+                if self.game_state.eaten_fly.is_none() && !self.game_state.frog.is_eating() {
+                    if (fly.position - self.game_state.frog.position).length() < 30. {
+                        let frog_dir = Transform2D::create_rotation(self.game_state.frog.angle)
+                            .transform_vector(vec2(0., 1.))
+                            .normalize();
+                        let to_fly_dir = (fly.position - self.game_state.frog.position).normalize();
+                        if frog_dir.dot(to_fly_dir) > 0.71 {
+                            self.game_state.frog.start_eating(fly.position);
+                            eat_fly = Some(i);
+                        }
+                    }
+                }
+            }
+            if let Some(eat_fly) = eat_fly {
+                self.game_state.eaten_fly = Some(self.game_state.flies.swap_remove(eat_fly));
+            }
 
             self.last_update -= 1. / 60.;
         }
@@ -193,7 +244,32 @@ impl Application {
 
         let mut entities = Vec::new();
 
+        if let Some(ref eaten_fly) = self.game_state.eaten_fly {
+            eaten_fly.render_shadow(&mut entities);
+        }
+        for fly in self.game_state.flies.iter() {
+            fly.render_shadow(&mut entities);
+        }
+
+        if self.game_state.frog.tongue_withdrawing() {
+            self.game_state
+                .eaten_fly
+                .as_ref()
+                .unwrap()
+                .render_fly(&mut entities);
+        }
+
         self.game_state.frog.render(&mut entities);
+
+        if !self.game_state.frog.tongue_withdrawing() {
+            if let Some(ref eaten_fly) = self.game_state.eaten_fly {
+                eaten_fly.render_fly(&mut entities);
+            }
+        }
+
+        for fly in self.game_state.flies.iter() {
+            fly.render_fly(&mut entities);
+        }
 
         self.program.render_vertices(&self.borders_buffer)?;
 
@@ -215,6 +291,24 @@ struct Assets {
     frog_leg_lower_right: TextureRect,
     frog_foot: TextureRect,
     lily_pad: TextureRect,
+    fly: TextureRect,
+    fly_shadow: TextureRect,
+    tongue_segment: TextureRect,
+    tongue_end: TextureRect,
+}
+
+struct TongueState {
+    timer: f32,
+    target_position: Point2D<f32>,
+}
+
+impl TongueState {
+    pub fn new(target_position: Point2D<f32>) -> Self {
+        TongueState {
+            timer: 0.0,
+            target_position,
+        }
+    }
 }
 
 struct Frog {
@@ -226,6 +320,8 @@ struct Frog {
     kick_left_duration: f32,
     kick_right_duration: f32,
 
+    tongue_state: Option<TongueState>,
+
     lily_pad: Sprite,
     body: (Point2D<f32>, Angle<f32>, Sprite),
     leg_upper_left: (Point2D<f32>, Angle<f32>, Sprite),
@@ -234,30 +330,34 @@ struct Frog {
     leg_upper_right: (Point2D<f32>, Angle<f32>, Sprite),
     leg_lower_right: (Point2D<f32>, Angle<f32>, Sprite),
     foot_right: (Point2D<f32>, Angle<f32>, Sprite),
+
+    tongue_anchor: Point2D<f32>,
+    tongue_segment: Sprite,
+    tongue_end: Sprite,
 }
 
 impl Frog {
     pub fn new(assets: &Assets, position: Point2D<f32>) -> Self {
-        let foot = Sprite::new(assets.frog_foot, point2(3., 2.));
+        let foot = Sprite::new(assets.frog_foot, 1, point2(3., 2.));
 
         let body_anchor = point2(14.0, 14.0);
         let body = (
             body_anchor,
             Angle::degrees(0.),
-            Sprite::new(assets.frog_body, point2(9., 10.)),
+            Sprite::new(assets.frog_body, 2, point2(9., 10.)),
         );
 
         let left_upper_anchor = point2(5., 2.);
         let leg_upper_left = (
             left_upper_anchor,
             Angle::degrees(-120.),
-            Sprite::new(assets.frog_leg_upper_left, point2(4., 2.)),
+            Sprite::new(assets.frog_leg_upper_left, 1, point2(4., 2.)),
         );
         let left_lower_anchor = point2(2., 9.);
         let leg_lower_left = (
             left_lower_anchor,
             Angle::degrees(120.),
-            Sprite::new(assets.frog_leg_lower_left, point2(3., 10.)),
+            Sprite::new(assets.frog_leg_lower_left, 1, point2(3., 10.)),
         );
         let left_foot_anchor = point2(2., 1.);
         let foot_left = (left_foot_anchor, Angle::degrees(180.), foot.clone());
@@ -266,13 +366,13 @@ impl Frog {
         let leg_upper_right = (
             right_upper_anchor,
             Angle::degrees(0.),
-            Sprite::new(assets.frog_leg_upper_right, point2(2., 2.)),
+            Sprite::new(assets.frog_leg_upper_right, 1, point2(2., 2.)),
         );
         let right_lower_anchor = point2(4., 9.);
         let leg_lower_right = (
             right_lower_anchor,
             Angle::degrees(0.),
-            Sprite::new(assets.frog_leg_lower_right, point2(2., 10.)),
+            Sprite::new(assets.frog_leg_lower_right, 1, point2(2., 10.)),
         );
         let right_foot_anchor = point2(4., 1.);
         let foot_right = (right_foot_anchor, Angle::degrees(0.), foot);
@@ -286,7 +386,9 @@ impl Frog {
             kick_left_duration: 0.0,
             kick_right_duration: 0.0,
 
-            lily_pad: Sprite::new(assets.lily_pad, point2(14., 14.)),
+            tongue_state: None,
+
+            lily_pad: Sprite::new(assets.lily_pad, 1, point2(14., 14.)),
             body,
             leg_upper_left,
             leg_lower_left,
@@ -294,36 +396,74 @@ impl Frog {
             leg_upper_right,
             leg_lower_right,
             foot_right,
+
+            tongue_anchor: point2(9.0, 15.0),
+            tongue_segment: Sprite::new(assets.tongue_segment, 1, point2(0.0, 1.5)),
+            tongue_end: Sprite::new(assets.tongue_end, 1, point2(2.5, 2.5)),
+        }
+    }
+
+    pub fn is_eating(&self) -> bool {
+        self.tongue_state.is_some()
+    }
+
+    pub fn start_eating(&mut self, target_position: Point2D<f32>) {
+        self.tongue_state = Some(TongueState::new(target_position));
+    }
+
+    pub fn tongue_withdrawing(&self) -> bool {
+        if let Some(ref tongue_state) = self.tongue_state {
+            tongue_state.timer > 0.1
+        } else {
+            false
+        }
+    }
+
+    pub fn tongue_position(&self) -> Option<Point2D<f32>> {
+        if let Some(ref tongue_state) = self.tongue_state {
+            let r = if tongue_state.timer < 0.1 {
+                tongue_state.timer / 0.1
+            } else {
+                (0.2 - tongue_state.timer) / 0.1
+            };
+            let anchor_pos = self.position
+                + self
+                    .body
+                    .2
+                    .transform()
+                    .transform_point(self.tongue_anchor)
+                    .to_vector();
+            Some(anchor_pos + (tongue_state.target_position - anchor_pos) * r)
+        } else {
+            None
         }
     }
 
     pub fn kick(&mut self, direction: i32) {
         let direction = if direction > 0 { 1 } else { -1 };
-        let duration = if direction > 0 {
+        let duration = if direction < 0 {
             &mut self.kick_right_duration
         } else {
             &mut self.kick_left_duration
         };
 
-        let pre_angular_vel = self.angular_velocity;
+        let pre_ang_vel = self.angular_velocity;
         if *duration <= 0.0 {
-            if self.angular_velocity * (-direction as f32) < 0.0 {
+            if self.angular_velocity * (direction as f32) < 0.0 {
                 self.angular_velocity = 0.0;
             }
             self.angular_velocity +=
-                FROG_KICK_ANGULAR_MOMENTUM / FROG_MOMENT_OF_INERTIA * -direction as f32;
+                FROG_KICK_ANGULAR_MOMENTUM / FROG_MOMENT_OF_INERTIA * direction as f32;
             self.velocity += Transform2D::create_rotation(self.angle)
                 .transform_vector(vec2(0.0, 1.0))
                 * (FROG_KICK_LINEAR_MOMENTUM / FROG_MASS);
         }
-        let a_vel_diff = self.angular_velocity - pre_angular_vel;
-        if a_vel_diff < 0.0 {
-            // One frog's angular momentum loss is the same frog's linear momentum gain
-            let angular_momentum_loss = a_vel_diff.abs() * FROG_MOMENT_OF_INERTIA;
-            self.velocity += Transform2D::create_rotation(self.angle)
-                .transform_vector(vec2(0.0, 1.0))
-                * (angular_momentum_loss / FROG_MASS);
-        }
+
+        // One frog's loss of angular momentum is the same frog's gain in linear momentum
+        let ang_vel_loss = (self.angular_velocity - pre_ang_vel) * -pre_ang_vel.signum();
+        let angular_momentum_loss = ang_vel_loss.max(0.0) * FROG_MOMENT_OF_INERTIA;
+        self.velocity += Transform2D::create_rotation(self.angle).transform_vector(vec2(0.0, 1.0))
+            * ((angular_momentum_loss) / FROG_MASS);
 
         *duration = 0.25
     }
@@ -364,7 +504,31 @@ impl Frog {
             .set_transform(Transform2D::create_rotation(self.angle));
 
         self.velocity *= 0.99;
-        self.angular_velocity *= 0.99;
+        self.angular_velocity *= 0.995;
+
+        if let Some(ref mut tongue_state) = self.tongue_state {
+            tongue_state.timer += dt;
+            if tongue_state.timer > 0.2 {
+                self.tongue_state = None;
+            }
+        }
+
+        if self.position.x < LEVEL_BOUNDS[0] {
+            self.position.x = LEVEL_BOUNDS[0];
+            self.velocity.x = self.velocity.x.abs() * 0.5;
+        }
+        if self.position.x > LEVEL_BOUNDS[2] {
+            self.position.x = LEVEL_BOUNDS[2];
+            self.velocity.x = -self.velocity.x.abs() * 0.5;
+        }
+        if self.position.y < LEVEL_BOUNDS[1] {
+            self.position.y = LEVEL_BOUNDS[1];
+            self.velocity.y = self.velocity.y.abs() * 0.5;
+        }
+        if self.position.y > LEVEL_BOUNDS[3] {
+            self.position.y = LEVEL_BOUNDS[3];
+            self.velocity.y = -self.velocity.y.abs() * 0.5;
+        }
     }
 
     pub fn render(&mut self, out: &mut Vec<Vertex>) {
@@ -424,34 +588,147 @@ impl Frog {
             &self.leg_lower_right.2,
         );
 
-        render_sprite(&self.lily_pad, self.position, out);
-        render_sprite(&self.body.2, self.position, out);
-        render_sprite(&self.foot_left.2, self.position, out);
-        render_sprite(&self.foot_right.2, self.position, out);
-        render_sprite(&self.leg_lower_left.2, self.position, out);
-        render_sprite(&self.leg_lower_right.2, self.position, out);
-        render_sprite(&self.leg_upper_left.2, self.position, out);
-        render_sprite(&self.leg_upper_right.2, self.position, out);
+        render_sprite(&self.lily_pad, 0, self.position, out);
+
+        if self.is_eating() {
+            let anchor_pos = self.position
+                + self
+                    .body
+                    .2
+                    .transform()
+                    .transform_point(self.tongue_anchor)
+                    .to_vector();
+            let tongue_position = self.tongue_position().unwrap();
+            render_line(
+                &mut self.tongue_segment,
+                &mut self.tongue_end,
+                anchor_pos,
+                tongue_position,
+                out,
+            );
+        }
+
+        if self.tongue_state.is_some() {
+            render_sprite(&self.body.2, 1, self.position, out);
+        } else {
+            render_sprite(&self.body.2, 0, self.position, out);
+        }
+        render_sprite(&self.foot_left.2, 0, self.position, out);
+        render_sprite(&self.foot_right.2, 0, self.position, out);
+        render_sprite(&self.leg_lower_left.2, 0, self.position, out);
+        render_sprite(&self.leg_lower_right.2, 0, self.position, out);
+        render_sprite(&self.leg_upper_left.2, 0, self.position, out);
+        render_sprite(&self.leg_upper_right.2, 0, self.position, out);
     }
 }
 
-const FROG_KICK_ANGULAR_MOMENTUM: f32 = 6.;
-const FROG_KICK_LINEAR_MOMENTUM: f32 = 10.;
+struct Fly {
+    position: Point2D<f32>,
+    target_position: Option<Point2D<f32>>,
+    idle_timer: f32,
+    eaten: bool,
 
-const FROG_MOMENT_OF_INERTIA: f32 = 3.0;
+    sprite: Sprite,
+    shadow: Sprite,
+
+    animation_timer: f32,
+}
+
+impl Fly {
+    pub fn new(assets: &Assets, position: Point2D<f32>, rng: &mut SmallRng) -> Self {
+        Self {
+            position,
+            target_position: None,
+            idle_timer: if rng.gen_range(0., 1.) < 0.5 {
+                rng.gen_range(0.0, 3.0)
+            } else {
+                0.0
+            },
+            eaten: false,
+
+            sprite: Sprite::new(assets.fly, 2, point2(3.5, 2.5)),
+            shadow: Sprite::new(assets.fly_shadow, 1, point2(2.0, 2.0)),
+
+            animation_timer: rng.gen_range(0.0, 0.2),
+        }
+    }
+
+    pub fn set_eaten(&mut self) {
+        self.eaten = true;
+    }
+
+    pub fn update(&mut self, dt: f32, rng: &mut SmallRng) {
+        if !self.eaten {
+            self.animation_timer = (self.animation_timer + dt) % 0.1;
+
+            if self.target_position.is_none() && self.idle_timer <= 0.0 {
+                self.target_position = Some(point2(
+                    rng.gen_range(LEVEL_BOUNDS[0], LEVEL_BOUNDS[2]),
+                    rng.gen_range(LEVEL_BOUNDS[1], LEVEL_BOUNDS[3]),
+                ));
+            } else {
+                self.idle_timer -= dt;
+            }
+
+            if let Some(target_position) = self.target_position {
+                let to_target = (target_position - self.position).normalize();
+                let new_position = self.position + to_target * 20. * dt;
+                if (target_position - new_position).dot(to_target) < 0.0 {
+                    self.target_position = None;
+                    self.idle_timer = rng.gen_range(0.0, 3.0);
+                }
+                self.position = new_position;
+            }
+        }
+    }
+
+    pub fn render_shadow(&self, out: &mut Vec<Vertex>) {
+        if !self.eaten {
+            render_sprite(&self.shadow, 0, self.position + vec2(0.0, -10.0), out);
+        }
+    }
+
+    pub fn render_fly(&self, out: &mut Vec<Vertex>) {
+        render_sprite(
+            &self.sprite,
+            if self.animation_timer < 0.05 { 0 } else { 1 },
+            self.position,
+            out,
+        );
+    }
+}
+
+const FROG_KICK_ANGULAR_MOMENTUM: f32 = 12.;
+const FROG_KICK_LINEAR_MOMENTUM: f32 = 6.;
+
+const FROG_MOMENT_OF_INERTIA: f32 = 5.0;
 const FROG_MASS: f32 = 1.0;
 
 #[derive(Clone)]
 struct Sprite {
-    image: TextureRect,
+    frames: Vec<TextureRect>,
+    frame_count: u32,
     origin: Point2D<f32>,
     transform: Transform2D<f32>,
 }
 
 impl Sprite {
-    fn new(image: TextureRect, origin: Point2D<f32>) -> Self {
+    fn new(image: TextureRect, frame_count: u32, origin: Point2D<f32>) -> Self {
+        let width = image[2] - image[0];
+        let frame_width = width / frame_count;
+        let frames = (0..frame_count)
+            .map(|i| {
+                [
+                    image[0] + i * frame_width,
+                    image[1],
+                    image[0] + (i + 1) * frame_width,
+                    image[3],
+                ]
+            })
+            .collect();
         Self {
-            image,
+            frames,
+            frame_count,
             origin,
             transform: Transform2D::create_translation(-origin.x, -origin.y),
         }
@@ -470,16 +747,31 @@ impl Sprite {
 }
 
 struct GameState {
+    rng: SmallRng,
+
     frog: Frog,
+    flies: Vec<Fly>,
+    eaten_fly: Option<Fly>,
 }
 
 impl GameState {
     pub fn new(assets: &Assets) -> Self {
+        let mut rng = SmallRng::seed_from_u64(0);
+        let mut flies = Vec::new();
+        for _ in 0..5 {
+            let pos = point2(rng.gen_range(20., 244.), rng.gen_range(20., 180.));
+            flies.push(Fly::new(assets, pos, &mut rng));
+        }
         Self {
+            rng,
             frog: Frog::new(assets, point2(133., 50.)),
+            flies,
+            eaten_fly: None,
         }
     }
 }
+
+const LEVEL_BOUNDS: [f32; 4] = [20., 20., 250., 180.];
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, AsBytes)]
@@ -507,20 +799,44 @@ fn load_image(
     Ok(texture_coords)
 }
 
-fn render_sprite(sprite: &Sprite, position: Point2D<f32>, out: &mut Vec<Vertex>) {
+fn render_line(
+    segment: &mut Sprite,
+    end: &mut Sprite,
+    start_point: Point2D<f32>,
+    end_point: Point2D<f32>,
+    out: &mut Vec<Vertex>,
+) {
+    let angle = (end_point - start_point).angle_from_x_axis();
+
+    segment.set_transform(
+        Transform2D::create_scale(
+            (end_point - start_point).length()
+                / (segment.frames[0][2] as f32 - segment.frames[0][0] as f32),
+            1.0,
+        )
+        .post_rotate(-angle),
+    );
+    end.set_transform(Transform2D::create_rotation(-angle));
+    render_sprite(segment, 0, start_point, out);
+    render_sprite(end, 0, end_point, out);
+}
+
+fn render_sprite(sprite: &Sprite, frame: usize, position: Point2D<f32>, out: &mut Vec<Vertex>) {
     let size = size2(
-        (sprite.image[2] - sprite.image[0]) as f32,
-        (sprite.image[3] - sprite.image[1]) as f32,
+        (sprite.frames[frame][2] - sprite.frames[frame][0]) as f32,
+        (sprite.frames[frame][3] - sprite.frames[frame][1]) as f32,
     );
     let vertex_rect = Rect::new(point2(0., 0.), size);
 
     let uv_pos = point2(
-        sprite.image[0] as f32 / TEXTURE_ATLAS_SIZE.width as f32,
-        sprite.image[1] as f32 / TEXTURE_ATLAS_SIZE.height as f32,
+        sprite.frames[frame][0] as f32 / TEXTURE_ATLAS_SIZE.width as f32,
+        sprite.frames[frame][1] as f32 / TEXTURE_ATLAS_SIZE.height as f32,
     );
     let uv_size = size2(
-        (sprite.image[2] - sprite.image[0]) as f32 / TEXTURE_ATLAS_SIZE.width as f32,
-        (sprite.image[3] - sprite.image[1]) as f32 / TEXTURE_ATLAS_SIZE.height as f32,
+        (sprite.frames[frame][2] - sprite.frames[frame][0]) as f32
+            / TEXTURE_ATLAS_SIZE.width as f32,
+        (sprite.frames[frame][3] - sprite.frames[frame][1]) as f32
+            / TEXTURE_ATLAS_SIZE.height as f32,
     );
     let uv_rect = Rect::new(uv_pos, uv_size);
 

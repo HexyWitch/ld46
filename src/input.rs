@@ -1,6 +1,4 @@
-use anyhow::Error;
 use euclid::default::{Point2D, Vector2D};
-use thiserror::Error;
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Key {
@@ -60,5 +58,4 @@ pub enum InputEvent {
     MouseUp(MouseButton),
     MouseMove(Point2D<f32>),
     MouseWheel(Vector2D<f32>),
-    Text(char),
 }

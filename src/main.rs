@@ -5,10 +5,6 @@ mod input;
 mod platform;
 mod texture_atlas;
 
-use euclid::{
-    default::{Rect, Transform2D},
-    point2, size2, vec2,
-};
 use zerocopy::AsBytes;
 
 use input::InputEvent;

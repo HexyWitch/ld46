@@ -116,7 +116,7 @@ pub fn run<
             // Keep input_stream alive for the lifetime of the client
             let _ = &input_stream;
 
-            let dt = last_time.unwrap_or(time) - time;
+            let dt = (time - last_time.unwrap_or(time)) / 1000.;
             update_fn(dt as f32, &input_events.borrow(), &mut gl_context);
             input_events.borrow_mut().clear();
             last_time = Some(time);
