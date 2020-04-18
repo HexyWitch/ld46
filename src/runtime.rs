@@ -76,7 +76,7 @@ pub fn run<F: Fn(&mut gl::Context) -> U, U: FnMut(f32, &mut gl::Context) + 'stat
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn run<F: Fn(&mut gl::Context) -> U, U: FnMut(&mut gl::Context) + 'static>(
+pub fn run<F: Fn(&mut gl::Context) -> U, U: FnMut(f32, &mut gl::Context) + 'static>(
     title: &str,
     size: (u32, u32),
     f: F,
@@ -123,9 +123,12 @@ pub fn run<F: Fn(&mut gl::Context) -> U, U: FnMut(&mut gl::Context) + 'static>(
 
     let f: Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>> = Rc::new(RefCell::new(None));
     let g = Rc::clone(&f);
+    let mut last_time = None;
     wasm_bindgen_futures::spawn_local(async move {
-        *g.borrow_mut() = Some(Closure::wrap(Box::new(move |_: f64| {
-            update_fn(&mut gl_context);
+        *g.borrow_mut() = Some(Closure::wrap(Box::new(move |time: f64| {
+            let dt = last_time.unwrap_or(time) - time;
+            update_fn(dt as f32, &mut gl_context);
+            last_time = Some(time);
 
             web_sys::window()
                 .expect("no global window")

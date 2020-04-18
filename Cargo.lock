@@ -580,6 +580,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b294d6fa9ee409a054354afc4352b0b9ef7ca222c69b8812cbea9e7d2bf3783f"
 
 [[package]]
+name = "ld46"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "console_error_panic_hook",
+ "console_log",
+ "env_logger",
+ "euclid",
+ "glow",
+ "glutin",
+ "image",
+ "log",
+ "raw-window-handle",
+ "thiserror",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "zerocopy",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -968,27 +989,6 @@ name = "regex-syntax"
 version = "0.6.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7fe5bd57d1d7414c6b5ed48563a2c855d995ff777729dcd91c369ec7fea395ae"
-
-[[package]]
-name = "rust-game-bootstrap"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "console_error_panic_hook",
- "console_log",
- "env_logger",
- "euclid",
- "glow",
- "glutin",
- "image",
- "log",
- "raw-window-handle",
- "thiserror",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "zerocopy",
-]
 
 [[package]]
 name = "rusttype"

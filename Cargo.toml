@@ -1,5 +1,5 @@
 [package]
-name = "rust-game-bootstrap"
+name = "ld46"
 version = "0.1.0"
 authors = ["William Lundstedt <walundstedt@gmail.com>"]
 edition = "2018"
