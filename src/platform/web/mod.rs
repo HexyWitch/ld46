@@ -1,9 +1,13 @@
+mod audio;
+
 use crate::{
     gl,
     input::{InputEvent, Key, MouseButton},
 };
 
 use euclid::{point2, vec2};
+
+pub use audio::start_audio_playback;
 
 pub fn run<
     F: Fn(&mut gl::Context) -> U,

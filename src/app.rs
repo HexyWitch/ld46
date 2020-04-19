@@ -4,12 +4,13 @@ use euclid::{
     point2, size2, vec2, Angle,
 };
 use rand::{rngs::SmallRng, Rng, SeedableRng};
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 use zerocopy::AsBytes;
 
 use crate::{
     gl,
     input::{InputEvent, Key},
+    mixer::{Audio, Mixer},
     texture_atlas::TextureAtlas,
 };
 
@@ -21,6 +22,7 @@ const TEXTURE_ATLAS_SIZE: Size2D<u32> = Size2D {
 
 pub struct Application {
     assets: Assets,
+    mixer: Arc<Mixer>,
 
     program: gl::Program,
     borders_buffer: gl::VertexBuffer,
@@ -32,7 +34,7 @@ pub struct Application {
 }
 
 impl Application {
-    pub fn new(gl_context: &mut gl::Context) -> Result<Self, Error> {
+    pub fn new(gl_context: &mut gl::Context, mixer: Arc<Mixer>) -> Result<Self, Error> {
         let mut texture_atlas =
             TextureAtlas::new((TEXTURE_ATLAS_SIZE.width, TEXTURE_ATLAS_SIZE.height));
         let mut texture = gl_context.create_texture(
@@ -142,7 +144,15 @@ impl Application {
                 &mut texture_atlas,
                 &mut texture,
             )?,
+
+            sound_of_music: mixer.load_ogg(include_bytes!("../assets/music.ogg"))?,
+            attack_sound: mixer.load_ogg(include_bytes!("../assets/attack.ogg"))?,
+            lose_sound: mixer.load_ogg(include_bytes!("../assets/lose.ogg"))?,
+            splash_sound: mixer.load_ogg(include_bytes!("../assets/splash.ogg"))?,
+            tongue_sound: mixer.load_ogg(include_bytes!("../assets/tongue.ogg"))?,
         };
+
+        mixer.play(&assets.sound_of_music, 0.25, true);
 
         let vertex_shader = gl_context
             .create_shader(gl::ShaderType::Vertex, include_str!("shaders/shader.vert"))
@@ -215,6 +225,7 @@ impl Application {
 
         Ok(Self {
             assets,
+            mixer,
 
             program,
             borders_buffer,
@@ -236,11 +247,15 @@ impl Application {
                 }
                 InputEvent::KeyDown(Key::A) => {
                     self.game_state.start();
-                    self.game_state.frog.kick(-1);
+                    if self.game_state.frog.kick(-1) {
+                        self.mixer.play(&self.assets.splash_sound, 1.0, false);
+                    }
                 }
                 InputEvent::KeyDown(Key::D) => {
                     self.game_state.start();
-                    self.game_state.frog.kick(1);
+                    if self.game_state.frog.kick(1) {
+                        self.mixer.play(&self.assets.splash_sound, 1.0, false);
+                    }
                 }
                 _ => {}
             }
@@ -250,7 +265,7 @@ impl Application {
         if self.last_update > 1. / 60. {
             let dt = 1. / 60.;
 
-            self.game_state.update(dt, &self.assets);
+            self.game_state.update(dt, &self.assets, &self.mixer);
 
             self.last_update -= 1. / 60.;
         }
@@ -296,6 +311,12 @@ struct Assets {
     lose_text: TextureRect,
     start_screen: TextureRect,
     restart: TextureRect,
+
+    sound_of_music: Audio,
+    lose_sound: Audio,
+    splash_sound: Audio,
+    tongue_sound: Audio,
+    attack_sound: Audio,
 }
 
 struct TongueState {
@@ -448,19 +469,19 @@ impl Frog {
         }
     }
 
-    pub fn kick(&mut self, direction: i32) {
+    pub fn kick(&mut self, direction: i32) -> bool {
         if self.dead {
-            return;
+            return false;
         }
+
         let direction = if direction > 0 { 1 } else { -1 };
         let duration = if direction < 0 {
             &mut self.kick_right_duration
         } else {
             &mut self.kick_left_duration
         };
-
-        let pre_ang_vel = self.angular_velocity;
         if *duration <= 0.0 {
+            let pre_ang_vel = self.angular_velocity;
             if self.angular_velocity * (direction as f32) < 0.0 {
                 self.angular_velocity = 0.0;
             }
@@ -469,15 +490,19 @@ impl Frog {
             self.velocity += Transform2D::create_rotation(self.angle)
                 .transform_vector(vec2(0.0, 1.0))
                 * (FROG_KICK_LINEAR_MOMENTUM / FROG_MASS);
+
+            *duration = 0.25;
+
+            // One frog's loss of angular momentum is the same frog's gain in linear momentum
+            let ang_vel_loss = (self.angular_velocity - pre_ang_vel) * -pre_ang_vel.signum();
+            let angular_momentum_loss = ang_vel_loss.max(0.0) * FROG_MOMENT_OF_INERTIA;
+            self.velocity += Transform2D::create_rotation(self.angle)
+                .transform_vector(vec2(0.0, 1.0))
+                * ((angular_momentum_loss) / FROG_MASS);
+            true
+        } else {
+            false
         }
-
-        // One frog's loss of angular momentum is the same frog's gain in linear momentum
-        let ang_vel_loss = (self.angular_velocity - pre_ang_vel) * -pre_ang_vel.signum();
-        let angular_momentum_loss = ang_vel_loss.max(0.0) * FROG_MOMENT_OF_INERTIA;
-        self.velocity += Transform2D::create_rotation(self.angle).transform_vector(vec2(0.0, 1.0))
-            * ((angular_momentum_loss) / FROG_MASS);
-
-        *duration = 0.25
     }
 
     pub fn update(&mut self, dt: f32) {
@@ -1098,7 +1123,7 @@ impl GameState {
 }
 
 impl GameState {
-    fn update(&mut self, dt: f32, assets: &Assets) {
+    fn update(&mut self, dt: f32, assets: &Assets, mixer: &Mixer) {
         if !self.started {
             return;
         }
@@ -1154,6 +1179,7 @@ impl GameState {
         if self.food_level <= 0.0 && self.lose_state.is_none() {
             self.frog.set_dead();
             self.lose_state = Some(LoseState::new(self.fly_count, assets));
+            mixer.play(&assets.lose_sound, 1.0, false);
         }
 
         self.frog.update(dt);
@@ -1181,6 +1207,7 @@ impl GameState {
                             .normalize();
                         let to_fly_dir = (fly.position - self.frog.position).normalize();
                         if frog_dir.dot(to_fly_dir) > 0.71 {
+                            mixer.play(&assets.tongue_sound, 1.0, false);
                             self.frog.start_eating(fly.position);
                             eat_fly = Some(i);
                             self.food_level = 1.0;
@@ -1194,12 +1221,14 @@ impl GameState {
         for snake in self.snakes.iter_mut() {
             let to_frog = self.frog.position - *snake.positions.back().unwrap();
             if snake.is_attacking() {
-                if to_frog.length() < 10. {
+                if to_frog.length() < 10. && self.lose_state.is_none() {
                     self.frog.set_dead();
                     self.lose_state = Some(LoseState::new(self.fly_count, assets));
+                    mixer.play(&assets.lose_sound, 1.0, false);
                 }
             } else if !self.frog.is_dead() {
                 if to_frog.length() < 20. {
+                    mixer.play(&assets.attack_sound, 1.0, false);
                     snake.set_attacking(self.frog.position);
                 }
                 if to_frog.length() < 60. {

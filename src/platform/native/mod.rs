@@ -1,3 +1,5 @@
+mod audio;
+
 use crate::{
     gl,
     input::{InputEvent, Key, MouseButton},
@@ -7,6 +9,8 @@ use euclid::{point2, vec2};
 use glutin::event::{
     ElementState, KeyboardInput, MouseButton as GlutinMouseButton, MouseScrollDelta, VirtualKeyCode,
 };
+
+pub use audio::start_audio_playback;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run<
