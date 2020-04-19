@@ -4,6 +4,7 @@ use euclid::{
     point2, size2, vec2, Angle,
 };
 use rand::{rngs::SmallRng, Rng, SeedableRng};
+use std::collections::VecDeque;
 use zerocopy::AsBytes;
 
 use crate::{
@@ -23,7 +24,7 @@ pub struct Application {
 
     program: gl::Program,
     borders_buffer: gl::VertexBuffer,
-    entities_buffer: gl::VertexBuffer,
+    vertices_buffer: gl::VertexBuffer,
 
     game_state: GameState,
 
@@ -98,6 +99,31 @@ impl Application {
             )?,
             tongue_end: load_image(
                 include_bytes!("../assets/tongue_end.png"),
+                &mut texture_atlas,
+                &mut texture,
+            )?,
+            hunger_bar_container: load_image(
+                include_bytes!("../assets/hunger_bar_container.png"),
+                &mut texture_atlas,
+                &mut texture,
+            )?,
+            hunger_bar: load_image(
+                include_bytes!("../assets/hunger_bar.png"),
+                &mut texture_atlas,
+                &mut texture,
+            )?,
+            snake_head: load_image(
+                include_bytes!("../assets/snake_head.png"),
+                &mut texture_atlas,
+                &mut texture,
+            )?,
+            snake_body: load_image(
+                include_bytes!("../assets/snake_body.png"),
+                &mut texture_atlas,
+                &mut texture,
+            )?,
+            snake_shadow: load_image(
+                include_bytes!("../assets/snake_shadow.png"),
                 &mut texture_atlas,
                 &mut texture,
             )?,
@@ -177,7 +203,7 @@ impl Application {
 
             program,
             borders_buffer,
-            entities_buffer: gl_context.create_vertex_buffer()?,
+            vertices_buffer: gl_context.create_vertex_buffer()?,
 
             game_state,
 
@@ -200,39 +226,7 @@ impl Application {
         if self.last_update > 1. / 60. {
             let dt = 1. / 60.;
 
-            self.game_state.frog.update(dt);
-
-            if let Some(ref mut eaten_fly) = self.game_state.eaten_fly {
-                if self.game_state.frog.is_eating() && self.game_state.frog.tongue_withdrawing() {
-                    eaten_fly.set_eaten();
-                    eaten_fly.position = self.game_state.frog.tongue_position().unwrap();
-                }
-
-                if !self.game_state.frog.is_eating() {
-                    self.game_state.eaten_fly = None;
-                }
-            }
-
-            let mut eat_fly = None;
-            for (i, fly) in self.game_state.flies.iter_mut().enumerate() {
-                fly.update(dt, &mut self.game_state.rng);
-
-                if self.game_state.eaten_fly.is_none() && !self.game_state.frog.is_eating() {
-                    if (fly.position - self.game_state.frog.position).length() < 30. {
-                        let frog_dir = Transform2D::create_rotation(self.game_state.frog.angle)
-                            .transform_vector(vec2(0., 1.))
-                            .normalize();
-                        let to_fly_dir = (fly.position - self.game_state.frog.position).normalize();
-                        if frog_dir.dot(to_fly_dir) > 0.71 {
-                            self.game_state.frog.start_eating(fly.position);
-                            eat_fly = Some(i);
-                        }
-                    }
-                }
-            }
-            if let Some(eat_fly) = eat_fly {
-                self.game_state.eaten_fly = Some(self.game_state.flies.swap_remove(eat_fly));
-            }
+            self.game_state.update(dt, &self.assets);
 
             self.last_update -= 1. / 60.;
         }
@@ -242,39 +236,14 @@ impl Application {
     pub fn render(&mut self, gl_context: &mut gl::Context) -> Result<(), Error> {
         gl_context.clear([91. / 255., 164. / 255., 244. / 255., 1.]);
 
-        let mut entities = Vec::new();
+        let mut vertices = Vec::new();
 
-        if let Some(ref eaten_fly) = self.game_state.eaten_fly {
-            eaten_fly.render_shadow(&mut entities);
-        }
-        for fly in self.game_state.flies.iter() {
-            fly.render_shadow(&mut entities);
-        }
-
-        if self.game_state.frog.tongue_withdrawing() {
-            self.game_state
-                .eaten_fly
-                .as_ref()
-                .unwrap()
-                .render_fly(&mut entities);
-        }
-
-        self.game_state.frog.render(&mut entities);
-
-        if !self.game_state.frog.tongue_withdrawing() {
-            if let Some(ref eaten_fly) = self.game_state.eaten_fly {
-                eaten_fly.render_fly(&mut entities);
-            }
-        }
-
-        for fly in self.game_state.flies.iter() {
-            fly.render_fly(&mut entities);
-        }
+        self.game_state.render(&mut vertices);
 
         self.program.render_vertices(&self.borders_buffer)?;
 
-        self.entities_buffer.write(&entities);
-        self.program.render_vertices(&self.entities_buffer)?;
+        self.vertices_buffer.write(&vertices);
+        self.program.render_vertices(&self.vertices_buffer)?;
 
         Ok(())
     }
@@ -295,6 +264,11 @@ struct Assets {
     fly_shadow: TextureRect,
     tongue_segment: TextureRect,
     tongue_end: TextureRect,
+    hunger_bar_container: TextureRect,
+    hunger_bar: TextureRect,
+    snake_head: TextureRect,
+    snake_body: TextureRect,
+    snake_shadow: TextureRect,
 }
 
 struct TongueState {
@@ -622,6 +596,174 @@ impl Frog {
     }
 }
 
+struct Snake {
+    speed: f32,
+    target_velocity: Vector2D<f32>,
+    turn_timer: f32,
+
+    chase_speed: f32,
+    chase: Option<Point2D<f32>>,
+
+    positions: VecDeque<Point2D<f32>>,
+    segments: Vec<(Point2D<f32>, Angle<f32>, u32)>,
+    max_body_length: f32,
+
+    head: Sprite,
+    body: Sprite,
+    shadow: Sprite,
+}
+
+impl Snake {
+    pub fn new(assets: &Assets, position: Point2D<f32>, rng: &mut SmallRng) -> Self {
+        let mut positions = VecDeque::new();
+        positions.push_back(position);
+
+        let speed = 15.;
+        let target_velocity = Transform2D::create_rotation(Angle::degrees(rng.gen_range(0., 360.)))
+            .transform_vector(vec2(1., 0.))
+            * speed;
+        Self {
+            speed,
+            target_velocity,
+            turn_timer: 0.0,
+
+            chase_speed: 35.,
+            chase: None,
+
+            positions,
+            segments: Vec::new(),
+            max_body_length: 40.,
+
+            head: Sprite::new(assets.snake_head, 3, point2(2.0, 3.0)),
+            body: Sprite::new(assets.snake_body, 5, point2(0.0, 2.0)),
+            shadow: Sprite::new(assets.snake_shadow, 5, point2(0.0, 3.0)),
+        }
+    }
+
+    fn set_chase(&mut self, target_position: Point2D<f32>) {
+        self.chase = Some(target_position);
+    }
+
+    pub fn body_length(&self) -> f32 {
+        let mut sum = 0.;
+        for i in 1..self.positions.len() {
+            sum += (self.positions[i - 1] - self.positions[i]).length();
+        }
+        sum
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        self.turn_timer = (self.turn_timer + dt * 0.5) % 1.0;
+
+        let position = *self.positions.back().unwrap();
+        if let Some(chase) = self.chase {
+            self.target_velocity = (chase - position).normalize() * self.chase_speed;
+            self.chase = None;
+        } else {
+            let mut target_vel_norm = self.target_velocity.normalize();
+            let avoid_dist = 20.;
+            let avoid_factor = 1. / 10.;
+            if position.x < LEVEL_BOUNDS[0] + avoid_dist {
+                target_vel_norm.x +=
+                    (LEVEL_BOUNDS[0] + avoid_dist - position.x) / avoid_dist * avoid_factor;
+            }
+            if position.x > LEVEL_BOUNDS[2] - avoid_dist {
+                target_vel_norm.x -=
+                    (position.x - (LEVEL_BOUNDS[2] - avoid_dist)) / avoid_dist * avoid_factor;
+            }
+            if position.y < LEVEL_BOUNDS[1] + avoid_dist {
+                target_vel_norm.y +=
+                    (LEVEL_BOUNDS[1] + avoid_dist - position.y) / avoid_dist * avoid_factor;
+            }
+            if position.y > LEVEL_BOUNDS[3] - avoid_dist {
+                target_vel_norm.y -=
+                    (position.y - (LEVEL_BOUNDS[3] - avoid_dist)) / avoid_dist * avoid_factor;
+            }
+            self.target_velocity = target_vel_norm.normalize() * self.speed;
+        }
+
+        let velocity = Transform2D::create_rotation(Angle::degrees(
+            (self.turn_timer * std::f32::consts::PI * 2.).sin() * 30.,
+        ))
+        .transform_vector(self.target_velocity);
+        let new_position = *self.positions.back().unwrap() + velocity * dt;
+        while self.body_length() >= self.max_body_length + 2.0 {
+            self.positions.pop_front();
+        }
+        self.positions.push_back(new_position);
+
+        self.segments.clear();
+
+        let head_position = *self.positions.back().unwrap();
+        let mut prev_segment_start = head_position;
+        let segment_length = (self.body.frames[0][2] - self.body.frames[0][0] - 2) as f32;
+        let mut remaining_length = self.body_length();
+        for pos in self.positions.iter().rev() {
+            if (prev_segment_start - *pos).length() >= segment_length {
+                remaining_length -= segment_length;
+                let to_prev = (prev_segment_start - *pos).normalize();
+                let segment_start = prev_segment_start - (to_prev * segment_length);
+                self.segments
+                    .push((segment_start, -to_prev.angle_from_x_axis(), 1));
+                prev_segment_start = segment_start;
+            }
+            if remaining_length - 1. < segment_length {
+                break;
+            }
+        }
+
+        if self.body_length() < self.max_body_length {
+            let to_prev = (prev_segment_start - *self.positions.front().unwrap()).normalize();
+            let last_segment_len = (prev_segment_start - *self.positions.front().unwrap()).length();
+            let last_segment_frame = if last_segment_len < 3. {
+                2
+            } else if last_segment_len < 5. {
+                3
+            } else {
+                4
+            };
+            self.segments.push((
+                *self.positions.front().unwrap(),
+                -to_prev.angle_from_x_axis(),
+                last_segment_frame,
+            ));
+        } else {
+            let to_prev = (prev_segment_start - *self.positions.front().unwrap()).normalize();
+            let segment_start = prev_segment_start - (to_prev * segment_length);
+            self.segments
+                .push((segment_start, -to_prev.angle_from_x_axis(), 0));
+        }
+    }
+
+    pub fn render_shadow(&mut self, out: &mut Vec<Vertex>) {
+        for (pos, angle, frame) in self.segments.iter().rev() {
+            self.shadow
+                .set_transform(Transform2D::create_rotation(*angle));
+            render_sprite(&self.shadow, *frame as usize, *pos, out)
+        }
+    }
+
+    pub fn render(&mut self, out: &mut Vec<Vertex>) {
+        for (pos, angle, frame) in self.segments.iter().rev() {
+            self.body
+                .set_transform(Transform2D::create_rotation(*angle));
+            render_sprite(&self.body, *frame as usize, *pos, out)
+        }
+
+        let head_position = *self.positions.back().unwrap();
+        let body_length = self.body_length();
+        let head_frame = if body_length < 4. { 0 } else { 1 };
+        if self.positions.len() > 1 {
+            let head_angle = (self.positions[self.positions.len() - 1]
+                - self.positions[self.positions.len() - 2])
+                .angle_from_x_axis();
+            self.head
+                .set_transform(Transform2D::create_rotation(-head_angle));
+        }
+        render_sprite(&self.head, head_frame, head_position, out);
+    }
+}
+
 struct Fly {
     position: Point2D<f32>,
     target_position: Option<Point2D<f32>>,
@@ -750,8 +892,17 @@ struct GameState {
     rng: SmallRng,
 
     frog: Frog,
+    food_level: f32,
+
+    run_time: f32,
+
     flies: Vec<Fly>,
     eaten_fly: Option<Fly>,
+
+    snakes: Vec<Snake>,
+
+    hunger_bar_container: Sprite,
+    hunger_bar: Sprite,
 }
 
 impl GameState {
@@ -762,12 +913,156 @@ impl GameState {
             let pos = point2(rng.gen_range(20., 244.), rng.gen_range(20., 180.));
             flies.push(Fly::new(assets, pos, &mut rng));
         }
+
+        let mut snakes = Vec::new();
+        snakes.push(Snake::new(assets, point2(100., 100.), &mut rng));
+
         Self {
             rng,
+
             frog: Frog::new(assets, point2(133., 50.)),
+            food_level: 0.5,
+
+            run_time: 0.0,
+
             flies,
             eaten_fly: None,
+
+            snakes,
+
+            hunger_bar_container: Sprite::new(assets.hunger_bar_container, 1, point2(25., 0.)),
+            hunger_bar: Sprite::new(assets.hunger_bar, 9, point2(0.0, 0.0)),
         }
+    }
+}
+
+impl GameState {
+    fn update(&mut self, dt: f32, assets: &Assets) {
+        self.run_time += dt;
+        let drain_time = 2.5 + (20. - self.run_time).max(0.0) / 2.;
+        self.food_level -= dt / drain_time;
+
+        self.frog.update(dt);
+
+        if let Some(ref mut eaten_fly) = self.eaten_fly {
+            if self.frog.is_eating() && self.frog.tongue_withdrawing() {
+                eaten_fly.set_eaten();
+                eaten_fly.position = self.frog.tongue_position().unwrap();
+            }
+
+            if !self.frog.is_eating() {
+                self.eaten_fly = None;
+            }
+        }
+
+        let mut eat_fly = None;
+        for (i, fly) in self.flies.iter_mut().enumerate() {
+            fly.update(dt, &mut self.rng);
+
+            if self.eaten_fly.is_none() && !self.frog.is_eating() {
+                if (fly.position - self.frog.position).length() < 30. {
+                    let frog_dir = Transform2D::create_rotation(self.frog.angle)
+                        .transform_vector(vec2(0., 1.))
+                        .normalize();
+                    let to_fly_dir = (fly.position - self.frog.position).normalize();
+                    if frog_dir.dot(to_fly_dir) > 0.71 {
+                        self.frog.start_eating(fly.position);
+                        eat_fly = Some(i);
+                        self.food_level = 1.0;
+                    }
+                }
+            }
+        }
+
+        for snake in self.snakes.iter_mut() {
+            let to_frog = self.frog.position - *snake.positions.back().unwrap();
+            if to_frog.length() < 60. {
+                snake.set_chase(self.frog.position);
+            }
+            snake.update(dt);
+        }
+
+        if let Some(eat_fly) = eat_fly {
+            self.eaten_fly = Some(self.flies.swap_remove(eat_fly));
+        }
+    }
+
+    pub fn render(&mut self, out: &mut Vec<Vertex>) {
+        if let Some(ref eaten_fly) = self.eaten_fly {
+            eaten_fly.render_shadow(out);
+        }
+        for fly in self.flies.iter() {
+            fly.render_shadow(out);
+        }
+        for snake in self.snakes.iter_mut() {
+            snake.render_shadow(out);
+        }
+        for snake in self.snakes.iter_mut() {
+            snake.render(out);
+        }
+
+        if self.frog.tongue_withdrawing() {
+            self.eaten_fly.as_ref().unwrap().render_fly(out);
+        }
+
+        self.frog.render(out);
+
+        if !self.frog.tongue_withdrawing() {
+            if let Some(ref eaten_fly) = self.eaten_fly {
+                eaten_fly.render_fly(out);
+            }
+        }
+
+        for fly in self.flies.iter() {
+            fly.render_fly(out);
+        }
+
+        self.render_hunger_bar(out);
+    }
+
+    fn render_hunger_bar(&mut self, out: &mut Vec<Vertex>) {
+        let container_pos = point2(800.0 / 3. / 2., 10.);
+        render_sprite(&self.hunger_bar_container, 0, container_pos, out);
+
+        let bar_length = (self.hunger_bar_container.frames[0][2]
+            - self.hunger_bar_container.frames[0][0])
+            - 2
+            - 4;
+        let bar_pos = container_pos
+            + self
+                .hunger_bar_container
+                .transform()
+                .transform_point(point2(1., 1.))
+                .to_vector();
+        let color = if self.food_level < 0.33 {
+            0
+        } else if self.food_level < 0.67 {
+            1
+        } else {
+            2
+        };
+
+        let segment_length = self.hunger_bar.frames[1][2] - self.hunger_bar.frames[1][0];
+        let fill_length = (bar_length as f32 * self.food_level).max(0.0);
+
+        self.hunger_bar.set_transform(Transform2D::identity());
+        render_sprite(&self.hunger_bar, 0 + color * 3, bar_pos, out);
+        render_sprite(
+            &self.hunger_bar,
+            2 + color * 3,
+            bar_pos + vec2(fill_length + 2., 0.0),
+            out,
+        );
+        self.hunger_bar.set_transform(Transform2D::create_scale(
+            (fill_length) / segment_length as f32,
+            1.0,
+        ));
+        render_sprite(
+            &self.hunger_bar,
+            1 + color * 3,
+            bar_pos + vec2(segment_length as f32, 0.0),
+            out,
+        );
     }
 }
 
