@@ -1,11 +1,15 @@
 mod audio;
 
+use std::rc::Rc;
+
+use euclid::{point2, vec2};
+use wasm_bindgen::{closure::Closure, JsCast};
+use web_sys::{HtmlElement, KeyboardEvent, MouseEvent, WheelEvent};
+
 use crate::{
     gl,
     input::{InputEvent, Key, MouseButton},
 };
-
-use euclid::{point2, vec2};
 
 pub use audio::start_audio_playback;
 
@@ -17,8 +21,7 @@ pub fn run<
     size: (u32, u32),
     f: F,
 ) {
-    use std::{cell::RefCell, rc::Rc};
-    use wasm_bindgen::{closure::Closure, JsCast};
+    use std::cell::RefCell;
 
     std::panic::set_hook(Box::new(console_error_panic_hook::hook));
     console_log::init_with_level(log::Level::Info).unwrap();
@@ -61,7 +64,7 @@ pub fn run<
     let g = Rc::clone(&f);
     let mut last_time = None;
 
-    let mut input_events = Rc::new(RefCell::new(Vec::new()));
+    let input_events = Rc::new(RefCell::new(Vec::new()));
 
     let input_stream = HtmlEventStream::new(canvas.clone().dyn_into().unwrap(), {
         let input_events = Rc::clone(&input_events);
@@ -125,11 +128,6 @@ pub fn run<
             .expect("could not request animation frame");
     })
 }
-
-use std::rc::Rc;
-
-use wasm_bindgen::{closure::Closure, JsCast};
-use web_sys::{HtmlElement, KeyboardEvent, MouseEvent, WheelEvent};
 
 pub enum HtmlEvent {
     KeyDown(KeyboardEvent),

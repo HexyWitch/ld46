@@ -1,5 +1,5 @@
 use wasm_bindgen::{closure::Closure, JsCast};
-use web_sys::{AudioProcessingEvent, KeyboardEvent, MouseEvent, WheelEvent};
+use web_sys::AudioProcessingEvent;
 
 pub fn start_audio_playback<F: FnMut(&mut [i16]) + 'static + Send>(mut f: F) {
     let audio_context = web_sys::AudioContext::new().unwrap();

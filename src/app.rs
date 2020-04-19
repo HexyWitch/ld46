@@ -221,7 +221,8 @@ impl Application {
         let mut borders_buffer = gl_context.create_vertex_buffer()?;
         borders_buffer.write(&border_vertices);
 
-        let game_state = GameState::new(&assets);
+        let rng = SmallRng::seed_from_u64(0);
+        let game_state = GameState::new(&assets, rng);
 
         Ok(Self {
             assets,
@@ -483,7 +484,7 @@ impl Frog {
         if *duration <= 0.0 {
             let pre_ang_vel = self.angular_velocity;
             if self.angular_velocity * (direction as f32) < 0.0 {
-                self.angular_velocity = 0.0;
+                self.angular_velocity *= 0.5;
             }
             self.angular_velocity +=
                 FROG_KICK_ANGULAR_MOMENTUM / FROG_MOMENT_OF_INERTIA * direction as f32;
@@ -1087,8 +1088,7 @@ struct GameState {
 }
 
 impl GameState {
-    pub fn new(assets: &Assets) -> Self {
-        let mut rng = SmallRng::seed_from_u64(0);
+    pub fn new(assets: &Assets, mut rng: SmallRng) -> Self {
         let mut flies = Vec::new();
         for _ in 0..5 {
             let pos = point2(rng.gen_range(20., 244.), rng.gen_range(20., 180.));
@@ -1254,7 +1254,8 @@ impl GameState {
     pub fn restart(&mut self, assets: &Assets) {
         if let Some(ref lose_state) = self.lose_state {
             if lose_state.finished() {
-                *self = GameState::new(assets);
+                let rng = std::mem::replace(&mut self.rng, SmallRng::seed_from_u64(0));
+                *self = GameState::new(assets, rng);
             }
         }
     }
