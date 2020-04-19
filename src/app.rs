@@ -938,7 +938,7 @@ impl Fly {
     }
 }
 
-const FROG_KICK_ANGULAR_MOMENTUM: f32 = 12.;
+const FROG_KICK_ANGULAR_MOMENTUM: f32 = 15.;
 const FROG_KICK_LINEAR_MOMENTUM: f32 = 6.;
 
 const FROG_MOMENT_OF_INERTIA: f32 = 5.0;
@@ -1128,7 +1128,7 @@ impl GameState {
             return;
         }
 
-        let difficulty_ramp_time = 120.;
+        let difficulty_ramp_time = 90.;
 
         self.run_time += dt;
         let drain_time = 6.0 + (difficulty_ramp_time - self.run_time).max(0.0) / 10.;
@@ -1159,7 +1159,7 @@ impl GameState {
                 self.next_fly = 1.0;
             }
 
-            let snake_spawn_time = 30.;
+            let snake_spawn_time = 45.;
             self.next_snake -= dt / snake_spawn_time;
             if self.next_snake <= 0.0 {
                 loop {
@@ -1221,17 +1221,17 @@ impl GameState {
         for snake in self.snakes.iter_mut() {
             let to_frog = self.frog.position - *snake.positions.back().unwrap();
             if snake.is_attacking() {
-                if to_frog.length() < 10. && self.lose_state.is_none() {
+                if to_frog.length() < 7. && self.lose_state.is_none() {
                     self.frog.set_dead();
                     self.lose_state = Some(LoseState::new(self.fly_count, assets));
                     mixer.play(&assets.lose_sound, 1.0, false);
                 }
             } else if !self.frog.is_dead() {
-                if to_frog.length() < 20. {
+                if to_frog.length() < 15. {
                     mixer.play(&assets.attack_sound, 1.0, false);
                     snake.set_attacking(self.frog.position);
                 }
-                if to_frog.length() < 60. {
+                if to_frog.length() < 50. {
                     snake.set_chase(self.frog.position);
                 }
             }
