@@ -152,7 +152,7 @@ impl Application {
             tongue_sound: mixer.load_ogg(include_bytes!("../assets/tongue.ogg"))?,
         };
 
-        mixer.play(&assets.sound_of_music, 0.25, true);
+        mixer.play(&assets.sound_of_music, 0.5, true);
 
         let vertex_shader = gl_context
             .create_shader(gl::ShaderType::Vertex, include_str!("shaders/shader.vert"))
