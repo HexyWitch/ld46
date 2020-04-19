@@ -132,6 +132,16 @@ impl Application {
                 &mut texture_atlas,
                 &mut texture,
             )?,
+            start_screen: load_image(
+                include_bytes!("../assets/start_screen.png"),
+                &mut texture_atlas,
+                &mut texture,
+            )?,
+            restart: load_image(
+                include_bytes!("../assets/restart.png"),
+                &mut texture_atlas,
+                &mut texture,
+            )?,
         };
 
         let vertex_shader = gl_context
@@ -221,8 +231,17 @@ impl Application {
 
         for event in input {
             match event {
-                InputEvent::KeyDown(Key::A) => self.game_state.frog.kick(-1),
-                InputEvent::KeyDown(Key::D) => self.game_state.frog.kick(1),
+                InputEvent::KeyDown(Key::Escape) => {
+                    self.game_state.restart(&self.assets);
+                }
+                InputEvent::KeyDown(Key::A) => {
+                    self.game_state.start();
+                    self.game_state.frog.kick(-1);
+                }
+                InputEvent::KeyDown(Key::D) => {
+                    self.game_state.start();
+                    self.game_state.frog.kick(1);
+                }
                 _ => {}
             }
         }
@@ -275,6 +294,8 @@ struct Assets {
     snake_body: TextureRect,
     snake_shadow: TextureRect,
     lose_text: TextureRect,
+    start_screen: TextureRect,
+    restart: TextureRect,
 }
 
 struct TongueState {
@@ -330,17 +351,17 @@ impl Frog {
         let left_upper_anchor = point2(5., 2.);
         let leg_upper_left = (
             left_upper_anchor,
-            Angle::degrees(-120.),
+            Angle::degrees(0.),
             Sprite::new(assets.frog_leg_upper_left, 1, point2(4., 2.)),
         );
         let left_lower_anchor = point2(2., 9.);
         let leg_lower_left = (
             left_lower_anchor,
-            Angle::degrees(120.),
+            Angle::degrees(0.),
             Sprite::new(assets.frog_leg_lower_left, 1, point2(3., 10.)),
         );
         let left_foot_anchor = point2(2., 1.);
-        let foot_left = (left_foot_anchor, Angle::degrees(180.), foot.clone());
+        let foot_left = (left_foot_anchor, Angle::degrees(0.), foot.clone());
 
         let right_upper_anchor = point2(13., 2.);
         let leg_upper_right = (
@@ -947,6 +968,8 @@ struct LoseState {
     lose_text_pos: Point2D<f32>,
     lose_text: Sprite,
     fly: Sprite,
+
+    restart: Sprite,
 }
 
 impl LoseState {
@@ -959,6 +982,8 @@ impl LoseState {
             lose_text_pos: point2(800. / 3. / 2., 150.),
             lose_text: Sprite::new(assets.lose_text, 1, point2(32., 0.)),
             fly: Sprite::new(assets.fly, 2, point2(3.5, 2.5)),
+
+            restart: Sprite::new(assets.restart, 1, point2(14., 0.)),
         }
     }
 
@@ -987,7 +1012,7 @@ impl LoseState {
                     ),
                     0.0,
                 ));
-                self.next_fly = 0.12;
+                self.next_fly = 0.21;
             }
         }
 
@@ -1003,11 +1028,18 @@ impl LoseState {
             let frame = if *timer > 0.05 { 0 } else { 1 };
             render_sprite(&self.fly, frame, *pos, out);
         }
+
+        if self.fly_sprites.len() == self.fly_count as usize {
+            render_sprite(&self.restart, 0, point2(800. / 3. / 2., 50.), out);
+        }
     }
 }
 
 struct GameState {
     rng: SmallRng,
+
+    started: bool,
+    start_screen: Sprite,
 
     frog: Frog,
     food_level: f32,
@@ -1038,10 +1070,11 @@ impl GameState {
             flies.push(Fly::new(assets, pos, &mut rng));
         }
 
-        let mut snakes = Vec::new();
-
         Self {
             rng,
+
+            started: false,
+            start_screen: Sprite::new(assets.start_screen, 1, point2(21., 0.)),
 
             frog: Frog::new(assets, point2(133., 50.)),
             food_level: 1.0,
@@ -1054,7 +1087,7 @@ impl GameState {
             flies,
             eaten_fly: None,
 
-            snakes,
+            snakes: Vec::new(),
 
             hunger_bar_container: Sprite::new(assets.hunger_bar_container, 1, point2(25., 0.)),
             hunger_bar: Sprite::new(assets.hunger_bar, 9, point2(0.0, 0.0)),
@@ -1066,6 +1099,10 @@ impl GameState {
 
 impl GameState {
     fn update(&mut self, dt: f32, assets: &Assets) {
+        if !self.started {
+            return;
+        }
+
         let difficulty_ramp_time = 120.;
 
         self.run_time += dt;
@@ -1181,6 +1218,18 @@ impl GameState {
         }
     }
 
+    pub fn start(&mut self) {
+        self.started = true;
+    }
+
+    pub fn restart(&mut self, assets: &Assets) {
+        if let Some(ref lose_state) = self.lose_state {
+            if lose_state.finished() {
+                *self = GameState::new(assets);
+            }
+        }
+    }
+
     pub fn render(&mut self, out: &mut Vec<Vertex>) {
         if let Some(ref eaten_fly) = self.eaten_fly {
             eaten_fly.render_shadow(out);
@@ -1223,6 +1272,10 @@ impl GameState {
             lose_state.render(out);
         } else {
             self.render_hunger_bar(out);
+        }
+
+        if !self.started {
+            render_sprite(&self.start_screen, 0, point2(800. / 3. / 2., 100.0), out);
         }
     }
 
