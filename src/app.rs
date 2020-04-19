@@ -127,6 +127,11 @@ impl Application {
                 &mut texture_atlas,
                 &mut texture,
             )?,
+            lose_text: load_image(
+                include_bytes!("../assets/lose_text.png"),
+                &mut texture_atlas,
+                &mut texture,
+            )?,
         };
 
         let vertex_shader = gl_context
@@ -269,6 +274,7 @@ struct Assets {
     snake_head: TextureRect,
     snake_body: TextureRect,
     snake_shadow: TextureRect,
+    lose_text: TextureRect,
 }
 
 struct TongueState {
@@ -293,8 +299,8 @@ struct Frog {
 
     kick_left_duration: f32,
     kick_right_duration: f32,
-
     tongue_state: Option<TongueState>,
+    dead: bool,
 
     lily_pad: Sprite,
     body: (Point2D<f32>, Angle<f32>, Sprite),
@@ -318,7 +324,7 @@ impl Frog {
         let body = (
             body_anchor,
             Angle::degrees(0.),
-            Sprite::new(assets.frog_body, 2, point2(9., 10.)),
+            Sprite::new(assets.frog_body, 3, point2(9., 10.)),
         );
 
         let left_upper_anchor = point2(5., 2.);
@@ -359,8 +365,8 @@ impl Frog {
 
             kick_left_duration: 0.0,
             kick_right_duration: 0.0,
-
             tongue_state: None,
+            dead: false,
 
             lily_pad: Sprite::new(assets.lily_pad, 1, point2(14., 14.)),
             body,
@@ -375,6 +381,14 @@ impl Frog {
             tongue_segment: Sprite::new(assets.tongue_segment, 1, point2(0.0, 1.5)),
             tongue_end: Sprite::new(assets.tongue_end, 1, point2(2.5, 2.5)),
         }
+    }
+
+    fn is_dead(&self) -> bool {
+        self.dead
+    }
+
+    fn set_dead(&mut self) {
+        self.dead = true;
     }
 
     pub fn is_eating(&self) -> bool {
@@ -414,6 +428,9 @@ impl Frog {
     }
 
     pub fn kick(&mut self, direction: i32) {
+        if self.dead {
+            return;
+        }
         let direction = if direction > 0 { 1 } else { -1 };
         let duration = if direction < 0 {
             &mut self.kick_right_duration
@@ -443,7 +460,7 @@ impl Frog {
     }
 
     pub fn update(&mut self, dt: f32) {
-        let (upper_a, lower_a, foot_a) = if self.kick_left_duration > 0.0 {
+        let (upper_a, lower_a, foot_a) = if self.dead || self.kick_left_duration > 0.0 {
             (
                 Angle::degrees(-120.),
                 Angle::degrees(120.),
@@ -457,7 +474,7 @@ impl Frog {
         self.foot_left.1 = foot_a;
         self.kick_left_duration -= dt;
 
-        let (upper_a, lower_a, foot_a) = if self.kick_right_duration > 0.0 {
+        let (upper_a, lower_a, foot_a) = if self.dead || self.kick_right_duration > 0.0 {
             (
                 Angle::degrees(120.),
                 Angle::degrees(-120.),
@@ -584,6 +601,8 @@ impl Frog {
 
         if self.tongue_state.is_some() {
             render_sprite(&self.body.2, 1, self.position, out);
+        } else if self.dead {
+            render_sprite(&self.body.2, 2, self.position, out);
         } else {
             render_sprite(&self.body.2, 0, self.position, out);
         }
@@ -653,13 +672,15 @@ impl Snake {
     }
 
     pub fn update(&mut self, dt: f32) {
-        self.turn_timer = (self.turn_timer + dt * 0.5) % 1.0;
-
         let position = *self.positions.back().unwrap();
         if let Some(chase) = self.chase {
+            self.turn_timer = (self.turn_timer + dt * 1.0) % 1.0;
+
             self.target_velocity = (chase - position).normalize() * self.chase_speed;
             self.chase = None;
         } else {
+            self.turn_timer = (self.turn_timer + dt * 0.5) % 1.0;
+
             let mut target_vel_norm = self.target_velocity.normalize();
             let avoid_dist = 20.;
             let avoid_factor = 1. / 10.;
@@ -888,11 +909,79 @@ impl Sprite {
     }
 }
 
+struct LoseState {
+    fly_count: u32,
+    fly_sprites: Vec<(Point2D<f32>, f32)>,
+    next_fly: f32,
+
+    lose_text_pos: Point2D<f32>,
+    lose_text: Sprite,
+    fly: Sprite,
+}
+
+impl LoseState {
+    pub fn new(fly_count: u32, assets: &Assets) -> Self {
+        Self {
+            fly_count,
+            fly_sprites: Vec::new(),
+            next_fly: 0.0,
+
+            lose_text_pos: point2(800. / 3. / 2., 150.),
+            lose_text: Sprite::new(assets.lose_text, 1, point2(32., 0.)),
+            fly: Sprite::new(assets.fly, 2, point2(3.5, 2.5)),
+        }
+    }
+
+    fn finished(&self) -> bool {
+        self.fly_sprites.len() == self.fly_count as usize
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        let grid_width = 100.;
+        let grid_count = 15;
+        let grid_origin: Point2D<f32> = point2(
+            self.lose_text_pos.x - grid_width / 2.,
+            self.lose_text_pos.y - 20.,
+        );
+        if self.fly_sprites.len() < self.fly_count as usize {
+            self.next_fly -= dt;
+            if self.next_fly <= 0.0 {
+                let i = self.fly_sprites.len();
+                let x = i % grid_count;
+                let y = i / grid_count;
+                let width = grid_width / grid_count as f32;
+                self.fly_sprites.push((
+                    point2(
+                        grid_origin.x + x as f32 * width,
+                        grid_origin.y + y as f32 * width,
+                    ),
+                    0.0,
+                ));
+                self.next_fly = 0.12;
+            }
+        }
+
+        for (_, timer) in self.fly_sprites.iter_mut() {
+            *timer = (*timer + dt) % 0.1;
+        }
+    }
+
+    pub fn render(&mut self, out: &mut Vec<Vertex>) {
+        render_sprite(&self.lose_text, 0, self.lose_text_pos, out);
+
+        for (pos, timer) in self.fly_sprites.iter_mut() {
+            let frame = if *timer > 0.05 { 0 } else { 1 };
+            render_sprite(&self.fly, frame, *pos, out);
+        }
+    }
+}
+
 struct GameState {
     rng: SmallRng,
 
     frog: Frog,
     food_level: f32,
+    fly_count: u32,
 
     run_time: f32,
 
@@ -903,6 +992,8 @@ struct GameState {
 
     hunger_bar_container: Sprite,
     hunger_bar: Sprite,
+
+    lose_state: Option<LoseState>,
 }
 
 impl GameState {
@@ -922,6 +1013,7 @@ impl GameState {
 
             frog: Frog::new(assets, point2(133., 50.)),
             food_level: 0.5,
+            fly_count: 0,
 
             run_time: 0.0,
 
@@ -932,6 +1024,8 @@ impl GameState {
 
             hunger_bar_container: Sprite::new(assets.hunger_bar_container, 1, point2(25., 0.)),
             hunger_bar: Sprite::new(assets.hunger_bar, 9, point2(0.0, 0.0)),
+
+            lose_state: None,
         }
     }
 }
@@ -939,8 +1033,13 @@ impl GameState {
 impl GameState {
     fn update(&mut self, dt: f32, assets: &Assets) {
         self.run_time += dt;
-        let drain_time = 2.5 + (20. - self.run_time).max(0.0) / 2.;
+        let drain_time = 5.0 + (60. - self.run_time).max(0.0) / 10.;
         self.food_level -= dt / drain_time;
+
+        if self.food_level <= 0.0 && self.lose_state.is_none() {
+            self.frog.set_dead();
+            self.lose_state = Some(LoseState::new(self.fly_count, assets));
+        }
 
         self.frog.update(dt);
 
@@ -959,31 +1058,40 @@ impl GameState {
         for (i, fly) in self.flies.iter_mut().enumerate() {
             fly.update(dt, &mut self.rng);
 
-            if self.eaten_fly.is_none() && !self.frog.is_eating() {
-                if (fly.position - self.frog.position).length() < 30. {
-                    let frog_dir = Transform2D::create_rotation(self.frog.angle)
-                        .transform_vector(vec2(0., 1.))
-                        .normalize();
-                    let to_fly_dir = (fly.position - self.frog.position).normalize();
-                    if frog_dir.dot(to_fly_dir) > 0.71 {
-                        self.frog.start_eating(fly.position);
-                        eat_fly = Some(i);
-                        self.food_level = 1.0;
+            if !self.frog.is_dead() {
+                if self.eaten_fly.is_none() && !self.frog.is_eating() {
+                    if (fly.position - self.frog.position).length() < 30. {
+                        let frog_dir = Transform2D::create_rotation(self.frog.angle)
+                            .transform_vector(vec2(0., 1.))
+                            .normalize();
+                        let to_fly_dir = (fly.position - self.frog.position).normalize();
+                        if frog_dir.dot(to_fly_dir) > 0.71 {
+                            self.frog.start_eating(fly.position);
+                            eat_fly = Some(i);
+                            self.food_level = 1.0;
+                            self.fly_count += 1;
+                        }
                     }
                 }
             }
         }
 
         for snake in self.snakes.iter_mut() {
-            let to_frog = self.frog.position - *snake.positions.back().unwrap();
-            if to_frog.length() < 60. {
-                snake.set_chase(self.frog.position);
+            if !self.frog.is_dead() {
+                let to_frog = self.frog.position - *snake.positions.back().unwrap();
+                if to_frog.length() < 60. {
+                    snake.set_chase(self.frog.position);
+                }
             }
             snake.update(dt);
         }
 
         if let Some(eat_fly) = eat_fly {
             self.eaten_fly = Some(self.flies.swap_remove(eat_fly));
+        }
+
+        if let Some(ref mut lose_state) = self.lose_state {
+            lose_state.update(dt);
         }
     }
 
@@ -1017,7 +1125,11 @@ impl GameState {
             fly.render_fly(out);
         }
 
-        self.render_hunger_bar(out);
+        if let Some(ref mut lose_state) = self.lose_state {
+            lose_state.render(out);
+        } else {
+            self.render_hunger_bar(out);
+        }
     }
 
     fn render_hunger_bar(&mut self, out: &mut Vec<Vertex>) {
@@ -1043,7 +1155,7 @@ impl GameState {
         };
 
         let segment_length = self.hunger_bar.frames[1][2] - self.hunger_bar.frames[1][0];
-        let fill_length = (bar_length as f32 * self.food_level).max(0.0);
+        let fill_length = bar_length as f32 * self.food_level.max(0.0).powf(2.);
 
         self.hunger_bar.set_transform(Transform2D::identity());
         render_sprite(&self.hunger_bar, 0 + color * 3, bar_pos, out);

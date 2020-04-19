@@ -66,18 +66,6 @@ pub fn run<
                 if let Some(key) = get_key_from_code(&key_event.code()) {
                     input_events.borrow_mut().push(InputEvent::KeyDown(key));
                 }
-
-                let text = key_event.key();
-                if text.len() == 1 {
-                    let c = text.chars().next().unwrap();
-                    // limit text input to easily displayed ascii text
-                    if c.is_ascii_alphanumeric()
-                        || c.is_ascii_whitespace()
-                        || c.is_ascii_punctuation()
-                    {
-                        input_events.borrow_mut().push(InputEvent::Text(c));
-                    }
-                }
             }
             HtmlEvent::KeyUp(key_event) => {
                 if let Some(key) = get_key_from_code(&key_event.code()) {
