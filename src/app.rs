@@ -460,7 +460,7 @@ impl Frog {
     }
 
     pub fn update(&mut self, dt: f32) {
-        let (upper_a, lower_a, foot_a) = if self.dead || self.kick_left_duration > 0.0 {
+        let (upper_a, lower_a, foot_a) = if self.dead || self.kick_left_duration > 0.125 {
             (
                 Angle::degrees(-120.),
                 Angle::degrees(120.),
@@ -474,7 +474,7 @@ impl Frog {
         self.foot_left.1 = foot_a;
         self.kick_left_duration -= dt;
 
-        let (upper_a, lower_a, foot_a) = if self.dead || self.kick_right_duration > 0.0 {
+        let (upper_a, lower_a, foot_a) = if self.dead || self.kick_right_duration > 0.125 {
             (
                 Angle::degrees(120.),
                 Angle::degrees(-120.),
@@ -623,6 +623,8 @@ struct Snake {
     chase_speed: f32,
     chase: Option<Point2D<f32>>,
 
+    attack_timer: Option<f32>,
+
     positions: VecDeque<Point2D<f32>>,
     segments: Vec<(Point2D<f32>, Angle<f32>, u32)>,
     max_body_length: f32,
@@ -649,6 +651,8 @@ impl Snake {
             chase_speed: 35.,
             chase: None,
 
+            attack_timer: None,
+
             positions,
             segments: Vec::new(),
             max_body_length: 40.,
@@ -657,6 +661,16 @@ impl Snake {
             body: Sprite::new(assets.snake_body, 5, point2(0.0, 2.0)),
             shadow: Sprite::new(assets.snake_shadow, 5, point2(0.0, 3.0)),
         }
+    }
+
+    fn is_attacking(&self) -> bool {
+        self.attack_timer.is_some()
+    }
+
+    fn set_attacking(&mut self, target_position: Point2D<f32>) {
+        let position = *self.positions.back().unwrap();
+        self.target_velocity = (target_position - position).normalize() * 100.;
+        self.attack_timer = Some(0.5);
     }
 
     fn set_chase(&mut self, target_position: Point2D<f32>) {
@@ -673,41 +687,51 @@ impl Snake {
 
     pub fn update(&mut self, dt: f32) {
         let position = *self.positions.back().unwrap();
-        if let Some(chase) = self.chase {
-            self.turn_timer = (self.turn_timer + dt * 1.0) % 1.0;
+        let new_position = if let Some(ref mut attack_timer) = self.attack_timer {
+            *attack_timer -= dt;
+            let t = *attack_timer;
+            if t <= 0.0 {
+                self.attack_timer = None;
+            }
 
-            self.target_velocity = (chase - position).normalize() * self.chase_speed;
-            self.chase = None;
+            *self.positions.back().unwrap() + self.target_velocity * dt
         } else {
-            self.turn_timer = (self.turn_timer + dt * 0.5) % 1.0;
+            if let Some(chase) = self.chase {
+                self.turn_timer = (self.turn_timer + dt * 1.0) % 1.0;
 
-            let mut target_vel_norm = self.target_velocity.normalize();
-            let avoid_dist = 20.;
-            let avoid_factor = 1. / 10.;
-            if position.x < LEVEL_BOUNDS[0] + avoid_dist {
-                target_vel_norm.x +=
-                    (LEVEL_BOUNDS[0] + avoid_dist - position.x) / avoid_dist * avoid_factor;
-            }
-            if position.x > LEVEL_BOUNDS[2] - avoid_dist {
-                target_vel_norm.x -=
-                    (position.x - (LEVEL_BOUNDS[2] - avoid_dist)) / avoid_dist * avoid_factor;
-            }
-            if position.y < LEVEL_BOUNDS[1] + avoid_dist {
-                target_vel_norm.y +=
-                    (LEVEL_BOUNDS[1] + avoid_dist - position.y) / avoid_dist * avoid_factor;
-            }
-            if position.y > LEVEL_BOUNDS[3] - avoid_dist {
-                target_vel_norm.y -=
-                    (position.y - (LEVEL_BOUNDS[3] - avoid_dist)) / avoid_dist * avoid_factor;
-            }
-            self.target_velocity = target_vel_norm.normalize() * self.speed;
-        }
+                self.target_velocity = (chase - position).normalize() * self.chase_speed;
+                self.chase = None;
+            } else {
+                self.turn_timer = (self.turn_timer + dt * 0.5) % 1.0;
 
-        let velocity = Transform2D::create_rotation(Angle::degrees(
-            (self.turn_timer * std::f32::consts::PI * 2.).sin() * 30.,
-        ))
-        .transform_vector(self.target_velocity);
-        let new_position = *self.positions.back().unwrap() + velocity * dt;
+                let mut target_vel_norm = self.target_velocity.normalize();
+                let avoid_dist = 20.;
+                let avoid_factor = 1. / 10.;
+                if position.x < LEVEL_BOUNDS[0] + avoid_dist {
+                    target_vel_norm.x +=
+                        (LEVEL_BOUNDS[0] + avoid_dist - position.x) / avoid_dist * avoid_factor;
+                }
+                if position.x > LEVEL_BOUNDS[2] - avoid_dist {
+                    target_vel_norm.x -=
+                        (position.x - (LEVEL_BOUNDS[2] - avoid_dist)) / avoid_dist * avoid_factor;
+                }
+                if position.y < LEVEL_BOUNDS[1] + avoid_dist {
+                    target_vel_norm.y +=
+                        (LEVEL_BOUNDS[1] + avoid_dist - position.y) / avoid_dist * avoid_factor;
+                }
+                if position.y > LEVEL_BOUNDS[3] - avoid_dist {
+                    target_vel_norm.y -=
+                        (position.y - (LEVEL_BOUNDS[3] - avoid_dist)) / avoid_dist * avoid_factor;
+                }
+                self.target_velocity = target_vel_norm.normalize() * self.speed;
+            }
+
+            let velocity = Transform2D::create_rotation(Angle::degrees(
+                (self.turn_timer * std::f32::consts::PI * 2.).sin() * 30.,
+            ))
+            .transform_vector(self.target_velocity);
+            *self.positions.back().unwrap() + velocity * dt
+        };
         while self.body_length() >= self.max_body_length + 2.0 {
             self.positions.pop_front();
         }
@@ -773,7 +797,13 @@ impl Snake {
 
         let head_position = *self.positions.back().unwrap();
         let body_length = self.body_length();
-        let head_frame = if body_length < 4. { 0 } else { 1 };
+        let head_frame = if self.is_attacking() {
+            2
+        } else if body_length < 4. {
+            0
+        } else {
+            1
+        };
         if self.positions.len() > 1 {
             let head_angle = (self.positions[self.positions.len() - 1]
                 - self.positions[self.positions.len() - 2])
@@ -938,7 +968,7 @@ impl LoseState {
 
     pub fn update(&mut self, dt: f32) {
         let grid_width = 100.;
-        let grid_count = 15;
+        let grid_count = 13;
         let grid_origin: Point2D<f32> = point2(
             self.lose_text_pos.x - grid_width / 2.,
             self.lose_text_pos.y - 20.,
@@ -953,7 +983,7 @@ impl LoseState {
                 self.fly_sprites.push((
                     point2(
                         grid_origin.x + x as f32 * width,
-                        grid_origin.y + y as f32 * width,
+                        grid_origin.y - y as f32 * width,
                     ),
                     0.0,
                 ));
@@ -981,6 +1011,9 @@ struct GameState {
 
     frog: Frog,
     food_level: f32,
+    next_fly: f32,
+    next_snake: f32,
+
     fly_count: u32,
 
     run_time: f32,
@@ -1006,13 +1039,14 @@ impl GameState {
         }
 
         let mut snakes = Vec::new();
-        snakes.push(Snake::new(assets, point2(100., 100.), &mut rng));
 
         Self {
             rng,
 
             frog: Frog::new(assets, point2(133., 50.)),
-            food_level: 0.5,
+            food_level: 1.0,
+            next_fly: 0.0,
+            next_snake: 0.0,
             fly_count: 0,
 
             run_time: 0.0,
@@ -1032,9 +1066,53 @@ impl GameState {
 
 impl GameState {
     fn update(&mut self, dt: f32, assets: &Assets) {
+        let difficulty_ramp_time = 120.;
+
         self.run_time += dt;
-        let drain_time = 5.0 + (60. - self.run_time).max(0.0) / 10.;
+        let drain_time = 6.0 + (difficulty_ramp_time - self.run_time).max(0.0) / 10.;
         self.food_level -= dt / drain_time;
+
+        if self.lose_state.is_none() {
+            let fly_spawn_time = 3.0 + (difficulty_ramp_time - self.run_time).max(0.0) / 30.;
+            self.next_fly -= dt / fly_spawn_time;
+            if self.next_fly <= 0.0 {
+                let pos = if self.rng.gen_range(0.0, 1.0) < 0.5 {
+                    let x = self.rng.gen_range(-20., 800. / 3. + 20.);
+                    let y = if self.rng.gen_range(0.0, 1.0) < 0.5 {
+                        -20.
+                    } else {
+                        600. / 3. + 20.
+                    };
+                    point2(x, y)
+                } else {
+                    let y = self.rng.gen_range(-20., 600. / 3. + 20.);
+                    let x = if self.rng.gen_range(0.0, 1.0) < 0.5 {
+                        -20.
+                    } else {
+                        800. / 3. + 20.
+                    };
+                    point2(x, y)
+                };
+                self.flies.push(Fly::new(assets, pos, &mut self.rng));
+                self.next_fly = 1.0;
+            }
+
+            let snake_spawn_time = 30.;
+            self.next_snake -= dt / snake_spawn_time;
+            if self.next_snake <= 0.0 {
+                loop {
+                    let pos = point2(
+                        self.rng.gen_range(LEVEL_BOUNDS[0], LEVEL_BOUNDS[2]),
+                        self.rng.gen_range(LEVEL_BOUNDS[1], LEVEL_BOUNDS[3]),
+                    );
+                    if (pos - self.frog.position).length() > 80. {
+                        self.snakes.push(Snake::new(assets, pos, &mut self.rng));
+                        break;
+                    }
+                }
+                self.next_snake = 1.0;
+            }
+        }
 
         if self.food_level <= 0.0 && self.lose_state.is_none() {
             self.frog.set_dead();
@@ -1077,8 +1155,16 @@ impl GameState {
         }
 
         for snake in self.snakes.iter_mut() {
-            if !self.frog.is_dead() {
-                let to_frog = self.frog.position - *snake.positions.back().unwrap();
+            let to_frog = self.frog.position - *snake.positions.back().unwrap();
+            if snake.is_attacking() {
+                if to_frog.length() < 10. {
+                    self.frog.set_dead();
+                    self.lose_state = Some(LoseState::new(self.fly_count, assets));
+                }
+            } else if !self.frog.is_dead() {
+                if to_frog.length() < 20. {
+                    snake.set_attacking(self.frog.position);
+                }
                 if to_frog.length() < 60. {
                     snake.set_chase(self.frog.position);
                 }
@@ -1106,7 +1192,9 @@ impl GameState {
             snake.render_shadow(out);
         }
         for snake in self.snakes.iter_mut() {
-            snake.render(out);
+            if !snake.is_attacking() {
+                snake.render(out);
+            }
         }
 
         if self.frog.tongue_withdrawing() {
@@ -1114,6 +1202,12 @@ impl GameState {
         }
 
         self.frog.render(out);
+
+        for snake in self.snakes.iter_mut() {
+            if snake.is_attacking() {
+                snake.render(out);
+            }
+        }
 
         if !self.frog.tongue_withdrawing() {
             if let Some(ref eaten_fly) = self.eaten_fly {
